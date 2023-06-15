@@ -4,7 +4,7 @@ const zbs = std.build;
 const fs = std.fs;
 const mem = std.mem;
 
-const ScanProtocolsStep = @import("deps/zig-wayland/build.zig").ScanProtocolsStep;
+const Scanner = @import("deps/zig-wayland/build.zig").Scanner;
 
 /// While a waylock release is in development, this string should contain the version in
 /// development with the "-dev" suffix.
@@ -14,7 +14,7 @@ const version = "0.7.0-dev";
 
 pub fn build(b: *zbs.Builder) !void {
     const target = b.standardTargetOptions(.{});
-    const mode = b.standardReleaseOptions();
+    const optimize = b.standardOptimizeOption(.{});
 
     const strip = b.option(bool, "strip", "Omit debug information") orelse false;
     const pie = b.option(bool, "pie", "Build a Position Independent Executable") orelse false;
@@ -32,8 +32,10 @@ pub fn build(b: *zbs.Builder) !void {
     };
 
     if (man_pages) {
-        const scdoc_step = try ScdocStep.create(b);
-        try scdoc_step.install();
+        const scdoc = b.addSystemCommand(&.{"scdoc"});
+        scdoc.stdin = try fs.cwd().readFileAlloc(b.allocator, "doc/waylock.1.scd", 1024 * 1024);
+        const stdout = scdoc.captureStdOut();
+        b.getInstallStep().dependOn(&b.addInstallFile(stdout, "share/man/man1/waylock.1").step);
     }
 
     const install_prefix = try std.fs.path.resolve(b.allocator, &[_][]const u8{b.install_prefix});
@@ -48,12 +50,12 @@ pub fn build(b: *zbs.Builder) !void {
             var ret: u8 = undefined;
 
             const git_describe_long = b.execAllowFail(
-                &[_][]const u8{ "git", "-C", b.build_root, "describe", "--long" },
+                &[_][]const u8{ "git", "-C", b.build_root.path orelse ".", "describe", "--long" },
                 &ret,
                 .Inherit,
             ) catch break :blk version;
 
-            var it = mem.split(u8, mem.trim(u8, git_describe_long, &std.ascii.spaces), "-");
+            var it = mem.split(u8, mem.trim(u8, git_describe_long, &std.ascii.whitespace), "-");
             _ = it.next().?; // previous tag
             const commit_count = it.next().?;
             const commit_hash = it.next().?;
@@ -73,7 +75,9 @@ pub fn build(b: *zbs.Builder) !void {
     const options = b.addOptions();
     options.addOption([]const u8, "version", full_version);
 
-    const scanner = ScanProtocolsStep.create(b);
+    const scanner = Scanner.create(b);
+    defer scanner.finish();
+
     scanner.addSystemProtocol("staging/ext-session-lock/ext-session-lock-v1.xml");
     scanner.addSystemProtocol("staging/single-pixel-buffer/single-pixel-buffer-v1.xml");
     scanner.addSystemProtocol("stable/viewporter/viewporter.xml");
@@ -85,17 +89,19 @@ pub fn build(b: *zbs.Builder) !void {
     scanner.generate("wp_viewporter", 1);
     scanner.generate("wp_single_pixel_buffer_manager_v1", 1);
 
-    const waylock = b.addExecutable("waylock", "src/main.zig");
-    waylock.setTarget(target);
-    waylock.setBuildMode(mode);
+    const wayland = b.createModule(.{ .source_file = scanner.result });
+    const xkbcommon = b.createModule(.{ .source_file = .{ .path = "deps/zig-xkbcommon/src/xkbcommon.zig" } });
+
+    const waylock = b.addExecutable(.{
+        .name = "waylock",
+        .root_source_file = .{ .path = "src/main.zig" },
+        .target = target,
+        .optimize = optimize,
+    });
     waylock.addOptions("build_options", options);
 
-    waylock.addPackage(.{
-        .name = "wayland",
-        .source = .{ .generated = &scanner.result },
-    });
-    waylock.step.dependOn(&scanner.step);
-    waylock.addPackagePath("xkbcommon", "deps/zig-xkbcommon/src/xkbcommon.zig");
+    waylock.addModule("wayland", wayland);
+    waylock.addModule("xkbcommon", xkbcommon);
     waylock.linkLibC();
     waylock.linkSystemLibrary("wayland-client");
     waylock.linkSystemLibrary("xkbcommon");
@@ -105,31 +111,5 @@ pub fn build(b: *zbs.Builder) !void {
 
     waylock.strip = strip;
     waylock.pie = pie;
-    waylock.install();
+    b.installArtifact(waylock);
 }
-
-const ScdocStep = struct {
-    builder: *zbs.Builder,
-    step: zbs.Step,
-
-    fn create(builder: *zbs.Builder) !*ScdocStep {
-        const self = try builder.allocator.create(ScdocStep);
-        self.* = .{
-            .builder = builder,
-            .step = zbs.Step.init(.custom, "Generate man pages", builder.allocator, make),
-        };
-        return self;
-    }
-
-    fn make(step: *zbs.Step) !void {
-        const self = @fieldParentPtr(ScdocStep, "step", step);
-        _ = try self.builder.exec(
-            &[_][]const u8{ "sh", "-c", "scdoc < doc/waylock.1.scd > doc/waylock.1" },
-        );
-    }
-
-    fn install(self: *ScdocStep) !void {
-        self.builder.getInstallStep().dependOn(&self.step);
-        self.builder.installFile("doc/waylock.1", "share/man/man1/waylock.1");
-    }
-};

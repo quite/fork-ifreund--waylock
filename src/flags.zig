@@ -24,7 +24,7 @@ pub fn ParseResult(comptime flags: []const Flag) type {
         flag_data: [flags.len]FlagData = blk: {
             // Init all flags to false/null
             var flag_data: [flags.len]FlagData = undefined;
-            inline for (flags) |flag, i| {
+            inline for (flags, 0..) |flag, i| {
                 flag_data[i] = switch (flag.kind) {
                     .boolean => .{
                         .name = flag.name,
@@ -63,7 +63,7 @@ pub fn parse(args: [][*:0]const u8, comptime flags: []const Flag) !ParseResult(f
     var arg_idx: usize = 0;
     while (arg_idx < args.len) : (arg_idx += 1) {
         var parsed_flag = false;
-        inline for (flags) |flag, flag_idx| {
+        inline for (flags, 0..) |flag, flag_idx| {
             if (cstr.cmp(flag.name, args[arg_idx]) == 0) {
                 switch (flag.kind) {
                     .boolean => ret.flag_data[flag_idx].value.boolean = true,

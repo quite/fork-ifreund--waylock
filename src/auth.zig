@@ -153,10 +153,10 @@ fn converse(
         return .buf_err;
     };
 
-    mem.set(pam.Response, responses, .{});
+    @memset(responses, .{});
     resp.* = responses.ptr;
 
-    for (msg[0..count]) |message, i| {
+    for (msg[0..count], 0..) |message, i| {
         switch (message.msg_style) {
             .prompt_echo_off => {
                 responses[i] = .{
